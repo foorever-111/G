@@ -40,16 +40,17 @@ model = dict(
             loss_bbox=dict(loss_weight=2.0),
             loss_cls=dict(loss_weight=1.0),
             dis_loss=dict(
-                type='DisLoss', num_classes=20, shot=3, 
+                type='DisLoss', num_classes=20, shot=3,
                 loss_base_margin_weight=1.0,
                 loss_novel_margin_weight=1.0,
                 loss_neg_margin_weight=1.0,
                 power_weight=4.0),
             base_cpt = 'work_dirs/DIOR/TFA/tfa_r101_fpn_dior-split1_base-training/base_model_random_init_bbox_head.pth',
             angle_dim=8,
-            lambda_dec=0.05,
-            lambda_sem=0.5,
-            lambda_ang=0.2,
+            lambda_dec=0.1,
+            lambda_sem=1.0,
+            lambda_ang=0.5,
+            mix_weight=0.5,
             init_cfg=[
                 dict(
                     type='Caffe2Xavier',

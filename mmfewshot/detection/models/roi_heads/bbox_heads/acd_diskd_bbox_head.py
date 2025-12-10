@@ -16,12 +16,14 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
                  lambda_dec=0.1,
                  lambda_sem=0.5,
                  lambda_ang=0.2,
+                 mix_weight=0.5,
                  **kwargs):
         super().__init__(**kwargs)
         self.angle_dim = angle_dim
         self.lambda_dec = lambda_dec
         self.lambda_sem = lambda_sem
         self.lambda_ang = lambda_ang
+        self.mix_weight = mix_weight
 
         feat_dim = self.fc_cls.in_features
 
@@ -33,6 +35,12 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
 
         self.sem_embed = nn.Linear(feat_dim, feat_dim, bias=False)
         self.ang_embed = nn.Linear(feat_dim, feat_dim, bias=False)
+
+        # Use the existing classifier weights to initialize the category
+        # prototypes for a more stable starting point.
+        with torch.no_grad():
+            if self.fc_cls.weight.shape == self.category_proto_init.shape:
+                self.category_proto_init.copy_(self.fc_cls.weight.data)
 
         self._last_L_dec = None
 
@@ -92,14 +100,36 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
         P_pure, P_ang_proj, L_dec = self._decouple_prototypes()
         z_sem = F.normalize(self.sem_embed(x), dim=1)
         z_ang = F.normalize(self.ang_embed(x), dim=1)
-        m_sem = torch.matmul(z_sem, P_pure.t())
-        m_ang = torch.matmul(z_ang, P_ang_proj.t())
+        m_sem = torch.matmul(z_sem, P_pure.t())       # [N, num_classes]
+        m_ang = torch.matmul(z_ang, P_ang_proj.t())   # [N, num_classes]
 
-        cls_score = cls_score_base + self.lambda_sem * m_sem + self.lambda_ang * m_ang
+        # ACD semantic+angle logits
+        cls_score_acd = self.lambda_sem * m_sem + self.lambda_ang * m_ang
+
+        # Interpolate between base classifier and ACD logits
+        C_all = cls_score_base.size(1)
+        C_fg = self.num_classes
+
+        if C_all == C_fg:
+            # No explicit background class
+            cls_score = ((1 - self.mix_weight) * cls_score_base +
+                         self.mix_weight * cls_score_acd)
+        elif C_all == C_fg + 1:
+            # Only add metric logits to foreground classes
+            fg_score = ((1 - self.mix_weight) * cls_score_base[:, :C_fg] +
+                        self.mix_weight * cls_score_acd)
+            bg_score = cls_score_base[:, C_fg:].clone()
+            cls_score = torch.cat([fg_score, bg_score], dim=1)
+        else:
+            raise RuntimeError(
+                f'Unexpected cls_score_base dim: {C_all}, num_classes={C_fg}'
+            )
 
         if self.training:
             self._last_L_dec = L_dec
 
+        if return_fc_feat:
+            return cls_score, bbox_preds, x
         return cls_score, bbox_preds
 
     def loss(self,
