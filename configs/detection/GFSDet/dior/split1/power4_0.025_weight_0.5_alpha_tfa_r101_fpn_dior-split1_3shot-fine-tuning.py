@@ -33,7 +33,7 @@ model = dict(
 
     roi_head=dict(
         bbox_head=dict(
-            type='DisKDBBoxHead',
+            type='ACDDisKDBBoxHead',
             num_classes=20,
             loss_kd_weight= 0.025,
             base_alpha=0.5,
@@ -46,6 +46,10 @@ model = dict(
                 loss_neg_margin_weight=1.0,
                 power_weight=4.0),
             base_cpt = 'work_dirs/DIOR/TFA/tfa_r101_fpn_dior-split1_base-training/base_model_random_init_bbox_head.pth',
+            angle_dim=8,
+            lambda_dec=0.05,
+            lambda_sem=0.5,
+            lambda_ang=0.2,
             init_cfg=[
                 dict(
                     type='Caffe2Xavier',

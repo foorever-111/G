@@ -6,9 +6,10 @@ from .multi_relation_bbox_head import MultiRelationBBoxHead
 from .two_branch_bbox_head import TwoBranchBBoxHead
 
 from .kd_bbox_head import DisKDBBoxHead
+from .acd_diskd_bbox_head import ACDDisKDBBoxHead
 __all__ = [
     'CosineSimBBoxHead', 'ContrastiveBBoxHead', 'MultiRelationBBoxHead',
     'MetaBBoxHead', 'TwoBranchBBoxHead',
 
-     'DisKDBBoxHead', 'DisCosSimBBoxHead'
+     'DisKDBBoxHead', 'ACDDisKDBBoxHead', 'DisCosSimBBoxHead'
 ]
