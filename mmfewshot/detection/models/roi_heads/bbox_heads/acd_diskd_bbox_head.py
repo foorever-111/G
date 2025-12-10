@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from mmdet.models.builder import HEADS
 
+from mmfewshot.detection.models.utils import ACDPrototypeBank
 from .kd_bbox_head import DisKDBBoxHead
 
 
@@ -17,6 +18,9 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
                  lambda_sem=0.5,
                  lambda_ang=0.2,
                  mix_weight=0.5,
+                 prototype_bank=None,
+                 use_running_proto=True,
+                 proto_momentum=0.9,
                  **kwargs):
         super().__init__(**kwargs)
         self.angle_dim = angle_dim
@@ -24,13 +28,15 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
         self.lambda_sem = lambda_sem
         self.lambda_ang = lambda_ang
         self.mix_weight = mix_weight
+        self.use_running_proto = use_running_proto
+        self.proto_momentum = proto_momentum
 
         feat_dim = self.fc_cls.in_features
 
-        self.category_proto_init = nn.Parameter(
-            torch.randn(self.num_classes, feat_dim))
-        self.angle_proto = nn.Parameter(
-            torch.randn(self.num_classes, angle_dim))
+        self.register_buffer('category_proto_init',
+                             torch.randn(self.num_classes, feat_dim))
+        self.register_buffer('angle_proto_init',
+                             torch.randn(self.num_classes, angle_dim))
         self.angle_proj = nn.Linear(angle_dim, feat_dim, bias=False)
 
         self.sem_embed = nn.Linear(feat_dim, feat_dim, bias=False)
@@ -42,27 +48,25 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
             if self.fc_cls.weight.shape == self.category_proto_init.shape:
                 self.category_proto_init.copy_(self.fc_cls.weight.data)
 
+        if prototype_bank is None:
+            self.prototype_bank = ACDPrototypeBank(
+                self.num_classes, feat_dim, angle_dim,
+                momentum=self.proto_momentum)
+        elif isinstance(prototype_bank, ACDPrototypeBank):
+            self.prototype_bank = prototype_bank
+        else:
+            raise TypeError('prototype_bank must be an ACDPrototypeBank or None.')
+        self.prototype_bank.set_angle_projector(self.angle_proj)
+        self.prototype_bank.init_semantic(self.category_proto_init)
+        self.prototype_bank.ang_mean.copy_(self.angle_proto_init)
+
         self._last_L_dec = None
+        self._last_sem_feat = None
+        self._last_ang_feat = None
 
     def _decouple_prototypes(self):
         """Decouple category and angle prototypes."""
-        P_init = self.category_proto_init
-        P_ang = self.angle_proto
-
-        P_ang_proj = self.angle_proj(P_ang)
-
-        P_init_norm = F.normalize(P_init, dim=1)
-        P_ang_norm = F.normalize(P_ang_proj, dim=1)
-        cos_sim = (P_init_norm * P_ang_norm).sum(dim=1)
-
-        dot = (P_init * P_ang_proj).sum(dim=1, keepdim=True)
-        ang_norm2 = (P_ang_proj ** 2).sum(dim=1, keepdim=True) + 1e-6
-        proj = dot / ang_norm2 * P_ang_proj
-        P_pure = P_init - proj
-        P_pure = F.normalize(P_pure, dim=1)
-
-        L_dec = (cos_sim ** 2).mean()
-        return P_pure, F.normalize(P_ang_proj, dim=1), L_dec
+        return self.prototype_bank.get_prototypes(self.angle_proj)
 
     def forward(self, x, return_fc_feat=False):
         kd_loss_list = []
@@ -100,6 +104,8 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
         P_pure, P_ang_proj, L_dec = self._decouple_prototypes()
         z_sem = F.normalize(self.sem_embed(x), dim=1)
         z_ang = F.normalize(self.ang_embed(x), dim=1)
+        self._last_sem_feat = z_sem.detach()
+        self._last_ang_feat = z_ang.detach()
         m_sem = torch.matmul(z_sem, P_pure.t())       # [N, num_classes]
         m_ang = torch.matmul(z_ang, P_ang_proj.t())   # [N, num_classes]
 
@@ -142,6 +148,10 @@ class ACDDisKDBBoxHead(DisKDBBoxHead):
              bbox_weights,
              cos_dis=None,
              reduction_override=None):
+        if self.training and self.use_running_proto:
+            self.prototype_bank.update(self._last_sem_feat, self._last_ang_feat,
+                                       labels)
+
         losses = super().loss(cls_score, bbox_pred, rois, labels, label_weights,
                               bbox_targets, bbox_weights, cos_dis,
                               reduction_override)
